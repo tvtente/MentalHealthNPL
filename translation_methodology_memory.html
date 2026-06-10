@@ -44,20 +44,20 @@
 <div style="text-align:center;border-radius:24px;padding:12px;margin:20px 0 14px 0;font-size:108%;font-family:Arial,Helvetica,sans-serif;background:#F4D35E;color:#1D3037;overflow:hidden;border:1px solid rgba(29,48,55,0.25);box-shadow:0 4px 14px rgba(0,0,0,0.12);">
   <h3 style="margin:0;color:#000000;font-size:22px;">2. Estructura operativa del flujo de traducción</h3>
   <div style="font-size:78%;font-weight:normal;color:#1D3037;margin-top:5px;">
-    Organización del archivo fuente, archivo de trabajo y criterio de continuidad sobre las celdas traducidas
+    Organización del archivo fuente, archivo de salida y criterio de continuidad sobre las celdas traducidas
   </div>
 </div>
 
 <div style="margin:16px 0 20px 0;padding:16px 20px;border-left:6px solid #F4D35E;background:#F8FAF8;border-radius:14px;font-family:Arial,Helvetica,sans-serif;color:#1D3037;box-shadow:0 4px 14px rgba(0,0,0,0.06);">
   <h3 style="margin:0;color:#000000;font-size:19px;">¿Cómo se organizó el procesamiento para no perder avance?</h3>
   <p style="font-size:15px;line-height:1.65;margin:10px 0 0;">
-    El flujo principal se apoyó en un archivo fuente con el texto original y en un archivo de trabajo en formato CSV que acumuló progresivamente las traducciones en español. El sistema añadió una columna específica para la salida traducida y utilizó esa columna como criterio real de continuación: las filas con contenido se consideraron resueltas y las filas vacías se consideraron pendientes.
+    El flujo principal se apoyó en un archivo fuente con el texto original y en un archivo de salida en formato CSV que acumuló progresivamente las traducciones en español. El sistema añadió una columna específica para la salida traducida y utilizó esa columna como criterio real de continuación: las filas con contenido se consideraron resueltas y las filas vacías se consideraron pendientes.
   </p>
   <p style="font-size:15px;line-height:1.65;margin:10px 0 0;">
-    Este patrón hizo que la reanudación no dependiera del número absoluto de línea procesada, sino del estado efectivo del dataset de trabajo. Si la ejecución se interrumpía, bastaba con relanzar el proceso para que el sistema reconstruyera la lista de pendientes a partir de los espacios todavía vacíos en la columna traducida, sin reiniciar desde cero.
+    Este patrón hizo que la reanudación no dependiera del número absoluto de línea procesada, sino del estado efectivo del dataset de salida. Si la ejecución se interrumpía, bastaba con relanzar el proceso para que el sistema reconstruyera la lista de pendientes a partir de los espacios todavía vacíos en la columna traducida, sin reiniciar desde cero.
   </p>
   <p style="font-size:15px;line-height:1.65;margin:10px 0 0;">
-    Para el caso de trabajo desarrollado en este proyecto, la ejecución controlada puede realizarse indicando explícitamente el archivo fuente, el archivo de trabajo, el locale de origen y destino, el tamaño de lote, la longitud de fragmento y el timeout. Un ejemplo representativo sería una configuración como <b>source-locale = en-US</b>, <b>target-locale = es-ES</b>, <b>batch-size = 8</b>, <b>chunk-max-chars = 500</b> y <b>request-timeout = 120</b>, lo que permite mantener una traducción gradual, validada y reanudable sobre el corpus actual.
+    Para el caso de trabajo desarrollado en este proyecto, la ejecución controlada puede realizarse indicando explícitamente el archivo fuente, el archivo de salida, el locale de origen y destino, el tamaño de lote, la longitud de fragmento y el timeout. Un ejemplo representativo sería una configuración como <b>source-locale = en-US</b>, <b>target-locale = es-ES</b>, <b>batch-size = 8</b>, <b>chunk-max-chars = 500</b> y <b>request-timeout = 120</b>, lo que permite mantener una traducción gradual, validada y reanudable sobre el corpus actual.
   </p>
 </div>
 
@@ -90,7 +90,7 @@
 <div style="margin:16px 0 20px 0;padding:16px 20px;border-left:6px solid #F4D35E;background:#F8FAF8;border-radius:14px;font-family:Arial,Helvetica,sans-serif;color:#1D3037;box-shadow:0 4px 14px rgba(0,0,0,0.06);">
   <h3 style="margin:0;color:#000000;font-size:19px;">¿Cómo se evitó incorporar respuestas dañadas al dataset?</h3>
   <p style="font-size:15px;line-height:1.65;margin:10px 0 0;">
-    El modelo fue instruido para devolver la salida en formato CSV con pares <b>row_id, translation_es</b>. Sin embargo, en la práctica se observaron respuestas truncadas, filas omitidas, identificadores equivocados y salidas semánticamente correctas pero estructuralmente inválidas. Para impedir que estas respuestas dañaran el dataset, se incorporó una capa de validación estricta antes de escribir cualquier resultado en el archivo de trabajo.
+    El modelo fue instruido para devolver la salida en formato CSV con pares <b>row_id, translation_es</b>. Sin embargo, en la práctica se observaron respuestas truncadas, filas omitidas, identificadores equivocados y salidas semánticamente correctas pero estructuralmente inválidas. Para impedir que estas respuestas dañaran el dataset, se incorporó una capa de validación estricta antes de escribir cualquier resultado en el archivo de salida.
   </p>
   <p style="font-size:15px;line-height:1.65;margin:10px 0 0;">
     La validación comprobó que la respuesta incluyera exactamente los identificadores esperados, sin omisiones, duplicados ni row_ids ajenos al lote solicitado. Cuando esta condición no se cumplía, la salida no se integraba al archivo final, sino que el sistema la trataba como error de lote y reintentaba con un tamaño menor, preservando la integridad tabular del corpus traducido.
@@ -147,7 +147,7 @@
     Para las filas que seguían provocando truncamiento incluso en tamaño unitario, se implementó una estrategia de <b>traducción fragmentada</b>. El texto original se dividió en fragmentos de aproximadamente <b>500 caracteres</b>, procurando respetar cortes razonables por frases y unidades discursivas. Cada fragmento se envió al modelo por separado y las traducciones parciales se recombinaron posteriormente en una sola salida final.
   </p>
   <p style="font-size:15px;line-height:1.65;margin:10px 0 0;">
-    Esta recuperación por fragmentos fue integrada dentro del propio flujo principal. Es decir, una fila podía ser detectada como problemática, registrada en el archivo auxiliar y, a continuación, sometida de inmediato a un intento de rescate. Si la recomposición resultaba exitosa, la traducción se escribía en el archivo de trabajo y la fila se eliminaba de la cola de problemáticas; si no, quedaba pendiente para una segunda pasada específica sobre textos largos.
+    Esta recuperación por fragmentos fue integrada dentro del propio flujo principal. Es decir, una fila podía ser detectada como problemática, registrada en el archivo auxiliar y, a continuación, sometida de inmediato a un intento de rescate. Si la recomposición resultaba exitosa, la traducción se escribía en el archivo de salida y la fila se eliminaba de la cola de problemáticas; si no, quedaba pendiente para una segunda pasada específica sobre textos largos.
   </p>
 </div>
 
@@ -180,7 +180,7 @@
 <div style="margin:16px 0 20px 0;padding:16px 20px;border-left:6px solid #C0DDD1;background:#FFFFFF;border-radius:14px;font-family:Arial,Helvetica,sans-serif;color:#1D3037;box-shadow:0 4px 14px rgba(0,0,0,0.06);">
   <h3 style="margin:0;color:#000000;font-size:19px;">¿Qué garantías metodológicas ofrece el procedimiento y cuáles son sus límites?</h3>
   <p style="font-size:15px;line-height:1.65;margin:10px 0 0;">
-    El proceso fue diseñado como un sistema trazable y reanudable. El archivo de trabajo, el checkpoint de avance y la cola de problemáticas permitieron auditar tanto la continuidad del procesamiento como la naturaleza de los errores encontrados. Desde un punto de vista operativo, esto hizo posible detener y relanzar la ejecución sin pérdida del trabajo consolidado y sin necesidad de recomenzar desde el inicio del corpus.
+    El proceso fue diseñado como un sistema trazable y reanudable. El archivo de salida, el checkpoint de avance y la cola de problemáticas permitieron auditar tanto la continuidad del procesamiento como la naturaleza de los errores encontrados. Desde un punto de vista operativo, esto hizo posible detener y relanzar la ejecución sin pérdida del trabajo consolidado y sin necesidad de recomenzar desde el inicio del corpus.
   </p>
   <p style="font-size:15px;line-height:1.65;margin:10px 0 0;">
     No obstante, el dataset traducido resultante debe entenderse como una construcción lingüística y computacional, no como una edición clínicamente validada. Aunque se introdujeron mecanismos para preservar fidelidad semántica, tono emocional y prudencia terminológica, toda traducción automática implica desplazamientos interpretativos potenciales. Su principal valor reside en ofrecer una base operativa para análisis automatizado en español, acompañada de una metodología transparente sobre cómo fue construida y bajo qué restricciones técnicas se desarrolló.
@@ -203,7 +203,7 @@
     El pipeline fue diseñado con parametrización explícita de locale, de modo que el idioma de origen y la variedad lingüística de destino puedan definirse mediante códigos normalizados como <b>en-US</b>, <b>en-GB</b>, <b>es-ES</b> o <b>es-AR</b>. Desde un punto de vista técnico, esta decisión permite desacoplar el procedimiento de una única configuración idiomática y reutilizarlo en escenarios donde la evaluación de modelos requiera alineación con una comunidad lingüística, un dialecto o una convención regional específica.
   </p>
   <p style="font-size:15px;line-height:1.65;margin:10px 0 0;color:#E8EEF2;">
-    En este marco, la traducción por locale no se considera una simple preferencia ortográfica, sino una forma de control metodológico sobre la variedad de salida esperada. Esta distinción resulta importante porque una traducción culturalmente desalineada puede introducir sesgos léxicos, registros poco naturales o formulaciones pragmáticamente ajenas al entorno donde posteriormente se entrene, evalúe o interprete el modelo. Por ello, el flujo permite generar columnas de traducción diferenciadas por locale dentro del mismo archivo de trabajo, conservando variantes independientes y auditables.
+    En este marco, la traducción por locale no se considera una simple preferencia ortográfica, sino una forma de control metodológico sobre la variedad de salida esperada. Esta distinción resulta importante porque una traducción culturalmente desalineada puede introducir sesgos léxicos, registros poco naturales o formulaciones pragmáticamente ajenas al entorno donde posteriormente se entrene, evalúe o interprete el modelo. Por ello, el flujo permite generar columnas de traducción diferenciadas por locale dentro del mismo archivo de salida, conservando variantes independientes y auditables.
   </p>
   <p style="font-size:15px;line-height:1.65;margin:10px 0 0;color:#E8EEF2;">
     En el caso concreto desarrollado en este proyecto, la transición hacia la nueva columna dependiente de locale puede realizarse primero como una <b>migración única</b> para preservar el trabajo acumulado previamente bajo una columna genérica. Una vez completado ese paso, el flujo normal puede continuar utilizando únicamente la parametrización por locale, sin necesidad de mantener instrucciones de renombrado en ejecuciones posteriores.
@@ -215,7 +215,6 @@
 source venv/bin/activate
 python mental_health_translation_agent.py \
   --input "Combined Data.csv" \
-  --output ".Combined Data Spanish.work.csv" \
   --provider ollama \
   --model gemma3:4b \
   --source-locale en-US \
@@ -233,7 +232,6 @@ python mental_health_translation_agent.py \
 source venv/bin/activate
 python mental_health_translation_agent.py \
   --input "Combined Data.csv" \
-  --output ".Combined Data Spanish.work.csv" \
   --provider ollama \
   --model gemma3:4b \
   --source-locale en-US \

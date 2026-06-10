@@ -32,7 +32,7 @@ Rules:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Second-pass translator for problematic long rows. Splits text into chunks and fills the work CSV."
+        description="Second-pass translator for problematic long rows. Splits text into chunks and fills the output CSV."
     )
     parser.add_argument("--provider", choices=["ollama"], default="ollama")
     parser.add_argument("--model", default="gemma3:4b")
@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-locale", default="es-ES")
     parser.add_argument("--base-url", default="", help="For Ollama the default is http://localhost:11434")
     parser.add_argument("--problematic-file", default=".translation_problematic_rows.csv")
-    parser.add_argument("--work-file", default=".Combined Data Spanish.work.csv")
+    parser.add_argument("--output", default="")
     parser.add_argument("--translated-col", default="")
     parser.add_argument("--request-timeout", type=float, default=120.0)
     parser.add_argument("--chunk-max-chars", type=int, default=500)
@@ -106,6 +106,11 @@ def locale_to_metadata(locale: str) -> dict[str, str]:
 def default_translated_col_for_locale(target_locale: str) -> str:
     metadata = locale_to_metadata(target_locale)
     return f"statement_{metadata['language_code']}_{metadata['region_code'].lower()}"
+
+
+def default_output_file_for_locale(target_locale: str) -> Path:
+    locale_label = normalize_locale(target_locale)
+    return Path(f"Combined Data {locale_label}.csv")
 
 
 def build_chunk_prompt(source_locale: str, target_locale: str) -> str:
@@ -307,14 +312,16 @@ def run() -> int:
     args.target_locale = normalize_locale(args.target_locale)
     if not args.translated_col:
         args.translated_col = default_translated_col_for_locale(args.target_locale)
+    if not args.output:
+        args.output = str(default_output_file_for_locale(args.target_locale))
     problematic_path = Path(args.problematic_file)
-    work_path = Path(args.work_file)
+    output_path = Path(args.output)
 
     if not problematic_path.exists():
         print(f"Problematic rows file not found: {problematic_path}", file=sys.stderr)
         return 1
-    if not work_path.exists():
-        print(f"Work file not found: {work_path}", file=sys.stderr)
+    if not output_path.exists():
+        print(f"Output file not found: {output_path}", file=sys.stderr)
         return 1
 
     try:
@@ -324,8 +331,8 @@ def run() -> int:
         return 1
 
     problematic_rows, _ = load_csv_rows(problematic_path)
-    work_rows, work_fieldnames = load_csv_rows(work_path)
-    index_map = row_id_to_index_map(work_rows)
+    output_rows, output_fieldnames = load_csv_rows(output_path)
+    index_map = row_id_to_index_map(output_rows)
 
     pending = []
     for row in problematic_rows:
@@ -333,12 +340,12 @@ def run() -> int:
             row_id = int((row.get("row_id") or "").strip())
         except ValueError:
             continue
-        work_index = index_map.get(row_id)
-        if work_index is None:
+        output_index = index_map.get(row_id)
+        if output_index is None:
             continue
-        if work_rows[work_index].get(args.translated_col, "").strip():
+        if output_rows[output_index].get(args.translated_col, "").strip():
             continue
-        pending.append((row_id, row, work_index))
+        pending.append((row_id, row, output_index))
 
     if args.max_rows > 0:
         pending = pending[: args.max_rows]
@@ -351,7 +358,7 @@ def run() -> int:
     print(f"Chunk max chars: {args.chunk_max_chars}")
 
     resolved_row_ids: set[int] = set()
-    for position, (row_id, problematic_row, work_index) in enumerate(pending, start=1):
+    for position, (row_id, problematic_row, output_index) in enumerate(pending, start=1):
         source_text = problematic_row.get("source_text", "").strip()
         label = problematic_row.get("label", "")
         if not source_text:
@@ -388,14 +395,14 @@ def run() -> int:
             continue
 
         final_translation = "\n\n".join(translated_chunks).strip()
-        work_rows[work_index][args.translated_col] = final_translation
+        output_rows[output_index][args.translated_col] = final_translation
         resolved_row_ids.add(row_id)
         print(f"Row {row_id} translated successfully via chunked pass.")
 
-    write_csv_rows(work_path, work_rows, work_fieldnames)
+    write_csv_rows(output_path, output_rows, output_fieldnames)
     remove_resolved_problematic_rows(problematic_path, resolved_row_ids)
     print(f"Resolved problematic rows: {len(resolved_row_ids)}")
-    print(f"Updated work file: {work_path}")
+    print(f"Updated output file: {output_path}")
     return 0
 
 

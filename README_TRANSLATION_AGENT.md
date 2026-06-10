@@ -67,7 +67,6 @@ Con Ollama:
 ```bash
 python mental_health_translation_agent.py \
   --input "Combined Data.ods" \
-  --output "Combined Data Spanish.ods" \
   --provider ollama \
   --model gemma3:4b \
   --response-format csv \
@@ -82,7 +81,7 @@ python mental_health_translation_agent.py \
 
 Esto traduce solo el primer bloque y genera:
 
-- `Combined Data.translated.csv`
+- `Combined Data es-ES.csv`
 - `.translation_checkpoint.json`
 
 ## Ejecucion completa
@@ -98,7 +97,6 @@ Con Ollama:
 ```bash
 python mental_health_translation_agent.py \
   --input "Combined Data.ods" \
-  --output "Combined Data Spanish.ods" \
   --provider ollama \
   --model gemma3:4b \
   --response-format csv \
@@ -112,7 +110,7 @@ python mental_health_translation_agent.py \
 
 ## Reanudar si se interrumpe
 
-Solo vuelve a ejecutar el mismo comando. El script detecta que filas ya tienen contenido en `statement_es` y sigue con las pendientes.
+Solo vuelve a ejecutar el mismo comando. El script detecta que filas ya tienen contenido en la columna derivada del locale, por ejemplo `statement_es_es`, y sigue con las pendientes.
 
 ## Cambiar el punto de inicio
 
@@ -271,7 +269,7 @@ python mental_health_translation_agent.py \
   --skip-unrecoverable
 ```
 
-Si ya estabas trabajando con una columna anterior, por ejemplo `statement_es`, y quieres migrarla a la variante nueva `statement_es_es`, puedes renombrarla directamente dentro del archivo de trabajo:
+Si ya estabas trabajando con una columna anterior, por ejemplo `statement_es`, y quieres migrarla a la variante nueva `statement_es_es`, puedes renombrarla directamente dentro del archivo de salida:
 
 ```bash
 python mental_health_translation_agent.py \
@@ -311,7 +309,7 @@ Ademas, si el fallo ocurre con una sola fila, el script principal intenta de inm
 - divide el texto largo en fragmentos
 - traduce cada fragmento
 - recompone la traduccion final
-- si funciona, rellena `statement_es` y elimina esa fila del archivo de problemáticas
+- si funciona, rellena la columna derivada del locale, por ejemplo `statement_es_es`, y elimina esa fila del archivo de problemáticas
 - si no funciona, la fila queda registrada para una segunda pasada posterior
 
 ## Segunda pasada para textos largos
@@ -325,7 +323,7 @@ python translate_problematic_rows.py \
   --provider ollama \
   --model gemma3:4b \
   --problematic-file ".translation_problematic_rows.csv" \
-  --work-file ".Combined Data Spanish.work.csv" \
+  --output "Combined Data es-ES.csv" \
   --chunk-max-chars 500 \
   --request-timeout 120
 ```
@@ -336,7 +334,7 @@ Ese proceso:
 - divide cada texto largo en fragmentos manejables
 - traduce fragmento por fragmento
 - recompone la traduccion final
-- la escribe en `statement_es` dentro del archivo de trabajo
+- la escribe en la columna derivada del locale dentro del archivo de salida, por ejemplo `statement_es_es`
 - elimina del archivo de problemáticas las filas que ya resolvio
 
 Si quieres probar solo unas pocas filas:

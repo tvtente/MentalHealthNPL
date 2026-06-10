@@ -130,11 +130,10 @@ def parse_args() -> argparse.Namespace:
         help="Backend provider to use.",
     )
     parser.add_argument("--input", default="Combined Data.csv", help="Input CSV file.")
-    parser.add_argument("--output", default="Combined Data.translated.csv", help="Output CSV file.")
     parser.add_argument(
-        "--work-file",
+        "--output",
         default="",
-        help="Internal working CSV used to accumulate progress without repeatedly reading the output spreadsheet.",
+        help="Output CSV file. If omitted, it is derived from the input name and --target-locale.",
     )
     parser.add_argument(
         "--checkpoint",
@@ -180,7 +179,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rename-translated-col-from",
         default="",
-        help="Existing translated column to rename inside the work file before continuing, for example statement_es.",
+        help="Existing translated column to rename inside the output CSV before continuing, for example statement_es.",
     )
     parser.add_argument(
         "--start-row",
@@ -290,6 +289,11 @@ def locale_to_metadata(locale: str) -> dict[str, str]:
 def default_translated_col_for_locale(target_locale: str) -> str:
     metadata = locale_to_metadata(target_locale)
     return f"statement_{metadata['language_code']}_{metadata['region_code'].lower()}"
+
+
+def default_output_file_for_paths(input_path: Path, target_locale: str) -> Path:
+    locale_label = normalize_locale(target_locale)
+    return input_path.parent / f"{input_path.stem} {locale_label}.csv"
 
 
 def build_system_prompt(response_format: str, source_locale: str, target_locale: str) -> str:
@@ -436,12 +440,6 @@ def convert_csv_to_ods(source_csv: Path, target_ods: Path) -> None:
     if not generated_ods.exists():
         raise ValueError(f"Converted ODS file was not created: {generated_ods}")
     shutil.copy2(generated_ods, target_ods)
-
-
-def default_work_file_for_paths(input_path: Path, target_locale: str) -> Path:
-    locale_label = normalize_locale(target_locale)
-    stem = input_path.stem
-    return input_path.parent / f".{stem} {locale_label}.work.csv"
 
 
 def should_sync_output(output_path: Path, completed_batches: int, sync_every: int, force: bool = False) -> bool:
@@ -912,11 +910,11 @@ def run() -> int:
         args.translated_col = default_translated_col_for_locale(args.target_locale)
 
     input_path = Path(args.input)
-    output_path = Path(args.output)
+    output_path = Path(args.output) if args.output else default_output_file_for_paths(input_path, args.target_locale)
     checkpoint_path = Path(args.checkpoint)
     failed_rows_path = Path(args.failed_rows_file)
     input_csv_path = input_path
-    work_file_path = Path(args.work_file) if args.work_file else default_work_file_for_paths(input_path, args.target_locale)
+    output_csv_path = output_path
 
     if not input_path.exists():
         print(f"Input file not found: {input_path}", file=sys.stderr)
@@ -930,15 +928,15 @@ def run() -> int:
             return 1
 
     if args.rename_translated_col_from:
-        renamed = rename_column_in_csv(work_file_path, args.rename_translated_col_from, args.translated_col)
+        renamed = rename_column_in_csv(output_csv_path, args.rename_translated_col_from, args.translated_col)
         if renamed:
             print(
-                f"Renamed translated column in work file: "
+                f"Renamed translated column in output CSV: "
                 f"{args.rename_translated_col_from} -> {args.translated_col}"
             )
 
     input_rows, input_headers = load_rows(input_csv_path)
-    existing_output_rows = load_existing_output(work_file_path)
+    existing_output_rows = load_existing_output(output_csv_path)
     rows = normalize_rows(input_rows, existing_output_rows, args.translated_col)
 
     fieldnames = list(input_headers)
@@ -964,7 +962,7 @@ def run() -> int:
     print(f"Batch size: {args.batch_size}")
     print(f"Target locale: {args.target_locale}")
     print(f"Translated column: {args.translated_col}")
-    print(f"Output file is: {work_file_path}")
+    print(f"Output file is: {output_csv_path}")
 
     if args.min_batch_size < 1:
         print("--min-batch-size must be at least 1.", file=sys.stderr)
@@ -1078,7 +1076,7 @@ def run() -> int:
         for row_id, translation in translations.items():
             rows[row_id][args.translated_col] = translation
 
-        write_rows(work_file_path, rows, fieldnames)
+        write_rows(output_csv_path, rows, fieldnames)
 
         batch_result = BatchResult(
             batch_number=batch_number,
@@ -1104,7 +1102,7 @@ def run() -> int:
         completed_batches += 1
         if should_sync_output(output_path, completed_batches, args.sync_output_every):
             try:
-                convert_csv_to_ods(work_file_path, output_path)
+                convert_csv_to_ods(output_csv_path, output_path)
                 print(f"Synchronized ODS output after {completed_batches} batches.")
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
@@ -1120,13 +1118,13 @@ def run() -> int:
 
     if is_ods_path(output_path):
         try:
-            convert_csv_to_ods(work_file_path, output_path)
+            convert_csv_to_ods(output_csv_path, output_path)
             print(f"Final ODS synchronized to {output_path}")
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 1
 
-    print(f"Output file is: {work_file_path}")
+    print(f"Output file is: {output_csv_path}")
     print("Finished.")
     return 0
 
