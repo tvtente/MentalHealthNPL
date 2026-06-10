@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+
+.translation_checkpoint.json
+.translation_problematic_rows.csv
+*.translated.tmp.csv
+*.work.csv
+
+*.ods#
+~$*
