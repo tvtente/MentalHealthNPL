@@ -728,6 +728,62 @@ def normalize_rows(
     if len(existing_output_rows) != len(input_rows):
         raise ValueError("The existing output file has a different number of rows than the input file.")
 
+    def parse_explicit_row_id(row: dict[str, str]) -> int | None:
+        raw = (row.get("") or "").strip()
+        if not raw:
+            return None
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+
+    explicit_ids_present = any(parse_explicit_row_id(row) is not None for row in input_rows) and any(
+        parse_explicit_row_id(row) is not None for row in existing_output_rows
+    )
+
+    if explicit_ids_present:
+        output_by_row_id: dict[int, dict[str, str]] = {}
+        duplicate_output_ids: set[int] = set()
+        for output_row in existing_output_rows:
+            row_id = parse_explicit_row_id(output_row)
+            if row_id is None:
+                continue
+            if row_id in output_by_row_id:
+                duplicate_output_ids.add(row_id)
+            output_by_row_id[row_id] = output_row
+
+        if duplicate_output_ids:
+            duplicate_preview = sorted(duplicate_output_ids)[:10]
+            raise ValueError(
+                "The existing output file contains duplicate row identifiers, which would make translation "
+                f"alignment unsafe. Examples: {duplicate_preview}"
+            )
+
+        merged_by_id: list[dict[str, str]] = []
+        missing_ids: list[int] = []
+        for source_row in input_rows:
+            row = dict(source_row)
+            row_id = parse_explicit_row_id(source_row)
+            if row_id is None:
+                merged_by_id.append(row)
+                continue
+            output_row = output_by_row_id.get(row_id)
+            if output_row is None:
+                missing_ids.append(row_id)
+                merged_by_id.append(row)
+                continue
+            if translated_col in output_row:
+                row[translated_col] = output_row.get(translated_col, "")
+            merged_by_id.append(row)
+
+        if missing_ids:
+            preview = missing_ids[:10]
+            raise ValueError(
+                "The existing output file is missing some row identifiers from the input file, so row-based "
+                f"alignment would be unsafe. Examples: {preview}"
+            )
+        return merged_by_id
+
     merged: list[dict[str, str]] = []
     for source_row, output_row in zip(input_rows, existing_output_rows):
         row = dict(source_row)
