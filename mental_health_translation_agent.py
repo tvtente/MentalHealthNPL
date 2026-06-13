@@ -140,7 +140,7 @@ def parse_args() -> argparse.Namespace:
         default=".translation_checkpoint.json",
         help="Checkpoint JSON file used to resume progress.",
     )
-    parser.add_argument("--model", default="gpt-4.1-mini", help="Model to use.")
+    parser.add_argument("--model", default="gemma3:4b", help="Model to use.")
     parser.add_argument(
         "--source-locale",
         default="en-US",
@@ -196,7 +196,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sleep-seconds",
         type=float,
-        default=1.0,
+        default=0.5,
         help="Pause between successful batches.",
     )
     parser.add_argument(
@@ -220,6 +220,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=500,
         help="Maximum characters per fragment when rescuing long problematic rows.",
+    )
+    parser.add_argument(
+        "--min-chunk-chars",
+        type=int,
+        default=80,
+        help="Smallest fragment size allowed when rescue translation must split a fragment again.",
     )
     parser.add_argument(
         "--sync-output-every",
@@ -333,6 +339,11 @@ def build_client(args: argparse.Namespace) -> str:
     return args.base_url or "http://localhost:11434"
 
 
+def log_status(message: str) -> None:
+    timestamp = time.strftime("%H:%M:%S")
+    print(f"[{timestamp}] {message}", flush=True)
+
+
 def ollama_generate(base_url: str, model: str, prompt: str, timeout: float) -> str:
     payload = json.dumps(
         {
@@ -346,6 +357,10 @@ def ollama_generate(base_url: str, model: str, prompt: str, timeout: float) -> s
         data=payload,
         headers={"Content-Type": "application/json"},
         method="POST",
+    )
+    started_at = time.perf_counter()
+    log_status(
+        f"Ollama request started: model={model}, prompt_chars={len(prompt)}"
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -365,6 +380,8 @@ def ollama_generate(base_url: str, model: str, prompt: str, timeout: float) -> s
     text = data.get("response", "")
     if not isinstance(text, str):
         raise ValueError("Ollama response did not contain a valid text payload.")
+    elapsed = time.perf_counter() - started_at
+    log_status(f"Ollama request finished in {elapsed:.2f}s with response_chars={len(text)}")
     return text
 
 
@@ -475,11 +492,13 @@ def load_existing_output(path: Path) -> list[dict[str, str]] | None:
 
 def write_rows(path: Path, rows: list[dict[str, Any]], fieldnames: list[str]) -> None:
     clean_fieldnames = sanitize_fieldnames(fieldnames)
+    log_status(f"Writing CSV: {path} with {len(rows)} rows")
     with path.open("w", encoding="utf-8-sig", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=clean_fieldnames)
         writer.writeheader()
         for row in rows:
             writer.writerow(sanitize_row(dict(row), clean_fieldnames))
+    log_status(f"Finished writing CSV: {path}")
 
 
 def rename_column_in_csv(path: Path, old_col: str, new_col: str) -> bool:
@@ -519,7 +538,9 @@ def load_checkpoint(path: Path) -> dict[str, Any]:
 
 
 def save_checkpoint(path: Path, data: dict[str, Any]) -> None:
+    log_status(f"Saving checkpoint: {path}")
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    log_status(f"Finished checkpoint: {path}")
 
 
 def append_failed_rows(path: Path, failed_rows: list[FailedRow]) -> None:
@@ -547,10 +568,12 @@ def append_failed_rows(path: Path, failed_rows: list[FailedRow]) -> None:
         }
 
     ordered_rows = [existing[row_id] for row_id in sorted(existing)]
+    log_status(f"Writing failed rows file: {path} with {len(ordered_rows)} rows")
     with path.open("w", encoding="utf-8-sig", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(ordered_rows)
+    log_status(f"Finished failed rows file: {path}")
 
 
 def remove_problematic_row_ids(path: Path, resolved_row_ids: set[int]) -> None:
@@ -603,18 +626,67 @@ def split_sentence_fragments(text: str) -> list[str]:
     text = text.strip()
     if not text:
         return []
-    paragraphs = [part.strip() for part in text.split("\n\n") if part.strip()]
+    placeholder = "<DOT>"
+    protected_text = text
+    protected_patterns = [
+        r"\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc|e\.g|i\.e|U\.S|U\.K|a\.m|p\.m)\.",
+        r"\b[A-Z]\.(?:[A-Z]\.)+",
+        r"\b\d+\.\d+\b",
+    ]
+    for pattern in protected_patterns:
+        protected_text = re.sub(
+            pattern,
+            lambda match: match.group(0).replace(".", placeholder),
+            protected_text,
+            flags=re.IGNORECASE,
+        )
+
+    paragraphs = [part.strip() for part in re.split(r"\n{2,}", protected_text) if part.strip()]
     fragments: list[str] = []
     for paragraph in paragraphs:
-        parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", paragraph) if part.strip()]
-        fragments.extend(parts if parts else [paragraph])
+        normalized_paragraph = re.sub(r"\s*\n+\s*", " ", paragraph).strip()
+        parts = [
+            part.strip().replace(placeholder, ".")
+            for part in re.findall(r".+?(?:[.!?](?:[\"')\]]+)?(?=\s+|$)|$)", normalized_paragraph)
+            if part.strip()
+        ]
+        fragments.extend(parts if parts else [normalized_paragraph.replace(placeholder, ".")])
     return fragments
 
 
 def split_long_fragment(text: str, max_chars: int) -> list[str]:
-    words = text.split()
-    if not words:
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
         return []
+
+    separators = [
+        r"(?<=[;:])\s+",
+        r"(?<=,)\s+(?=(?:and|but|or|because|which|that|who|while|although|however|so|then|if|when)\b)",
+        r"(?<=[)\]\"'])\s+",
+    ]
+
+    for separator in separators:
+        pieces = [piece.strip() for piece in re.split(separator, text, flags=re.IGNORECASE) if piece.strip()]
+        if len(pieces) <= 1:
+            continue
+        if all(len(piece) <= max_chars for piece in pieces):
+            return pieces
+
+        chunks: list[str] = []
+        current = pieces[0]
+        for piece in pieces[1:]:
+            candidate = f"{current} {piece}"
+            if len(candidate) <= max_chars:
+                current = candidate
+            else:
+                chunks.append(current)
+                current = piece
+        if current:
+            chunks.append(current)
+        if all(len(chunk) <= max_chars for chunk in chunks):
+            return chunks
+
+    words = text.split()
     chunks: list[str] = []
     current = words[0]
     for word in words[1:]:
@@ -651,6 +723,25 @@ def chunk_text(text: str, max_chars: int) -> list[str]:
     return chunks
 
 
+def fragment_output_looks_suspicious(source_text: str, translated_text: str) -> str | None:
+    compact = translated_text.strip()
+    if not compact:
+        return "empty_fragment"
+
+    lowered = compact.lower()
+    if "```" in compact:
+        return "markdown_fence_detected"
+    if lowered.startswith("row_id,") or lowered.startswith("{") or lowered.startswith("["):
+        return "structured_output_detected"
+
+    source_chars = len(source_text.strip())
+    translated_chars = len(compact)
+    if source_chars >= 220 and translated_chars < max(50, int(source_chars * 0.22)):
+        return f"fragment_too_short:{translated_chars}/{source_chars}"
+
+    return None
+
+
 def translate_fragment(
     client: str,
     model: str,
@@ -674,6 +765,83 @@ def translate_fragment(
     return translated
 
 
+def adaptive_translate_fragment(
+    client: str,
+    model: str,
+    text: str,
+    label: str,
+    timeout: float,
+    source_locale: str,
+    target_locale: str,
+    *,
+    chunk_max_chars: int,
+    min_chunk_chars: int,
+    sleep_seconds: float,
+    depth: int = 0,
+) -> str:
+    failure_reason: str | None = None
+    try:
+        translated = translate_fragment(
+            client=client,
+            model=model,
+            text=text,
+            label=label,
+            timeout=timeout,
+            source_locale=source_locale,
+            target_locale=target_locale,
+        )
+    except ValueError as exc:
+        translated = ""
+        failure_reason = f"fragment_error:{exc}"
+
+    suspicious_reason = failure_reason or fragment_output_looks_suspicious(text, translated)
+    if suspicious_reason is None:
+        return translated
+
+    if len(text) <= min_chunk_chars:
+        raise ValueError(
+            f"Fragment translation still looks incomplete at minimum chunk size {min_chunk_chars}. "
+            f"Reason: {suspicious_reason}"
+        )
+
+    next_chunk_size = max(min_chunk_chars, min(chunk_max_chars // 2, max(min_chunk_chars, len(text) // 2)))
+    if next_chunk_size >= len(text):
+        raise ValueError(
+            f"Could not reduce fragment further after suspicious output. Reason: {suspicious_reason}"
+        )
+
+    subchunks = chunk_text(text, next_chunk_size)
+    if len(subchunks) <= 1:
+        raise ValueError(
+            f"Could not split suspicious fragment into smaller parts. Reason: {suspicious_reason}"
+        )
+
+    indent = "  " * depth
+    print(
+        f"{indent}Fragment needs fallback ({suspicious_reason}). "
+        f"Retrying it as {len(subchunks)} smaller fragments with max {next_chunk_size} chars."
+    )
+
+    translated_chunks: list[str] = []
+    for subchunk_index, subchunk in enumerate(subchunks, start=1):
+        print(f"{indent}Subfragment {subchunk_index}/{len(subchunks)} ...")
+        translated_subchunk = adaptive_translate_fragment(
+            client=client,
+            model=model,
+            text=subchunk,
+            label=label,
+            timeout=timeout,
+            source_locale=source_locale,
+            target_locale=target_locale,
+            chunk_max_chars=next_chunk_size,
+            min_chunk_chars=min_chunk_chars,
+            sleep_seconds=sleep_seconds,
+            depth=depth + 1,
+        )
+        translated_chunks.append(translated_subchunk)
+    return "\n\n".join(translated_chunks).strip()
+
+
 def try_chunked_translation_for_row(
     client: str,
     model: str,
@@ -683,6 +851,7 @@ def try_chunked_translation_for_row(
     label_col: str,
     request_timeout: float,
     chunk_max_chars: int,
+    min_chunk_chars: int,
     sleep_seconds: float,
     source_locale: str,
     target_locale: str,
@@ -700,14 +869,17 @@ def try_chunked_translation_for_row(
     translated_chunks: list[str] = []
     for chunk_index, chunk in enumerate(chunks, start=1):
         print(f"Row {row_id}: translating fragment {chunk_index}/{len(chunks)} ...")
-        translated = translate_fragment(
-            client,
-            model,
-            chunk,
-            label,
-            request_timeout,
-            source_locale,
-            target_locale,
+        translated = adaptive_translate_fragment(
+            client=client,
+            model=model,
+            text=chunk,
+            label=label,
+            timeout=request_timeout,
+            source_locale=source_locale,
+            target_locale=target_locale,
+            chunk_max_chars=chunk_max_chars,
+            min_chunk_chars=min_chunk_chars,
+            sleep_seconds=sleep_seconds,
         )
         translated_chunks.append(translated)
         print(f"Row {row_id}: fragment {chunk_index}/{len(chunks)} completed.")
@@ -1090,6 +1262,7 @@ def run() -> int:
                                     label_col=args.label_col,
                                     request_timeout=args.request_timeout,
                                     chunk_max_chars=args.chunk_max_chars,
+                                    min_chunk_chars=args.min_chunk_chars,
                                     sleep_seconds=args.sleep_seconds,
                                     source_locale=args.source_locale,
                                     target_locale=args.target_locale,
